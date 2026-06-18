@@ -47,7 +47,42 @@ class EventVisualController extends Controller
 
     private const TOTAL_TTL_SECONDS = 60 * 15;
 
+    private const CALENDAR_TTL_SECONDS = 60 * 10;
+
     public function __construct(private GeocodingService $geocoding) {}
+
+    public function calendarData(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'month' => 'required|date_format:Y-m',
+            'date_from' => 'nullable|date',
+            'date_to' => 'nullable|date|after_or_equal:date_from',
+            'location' => 'nullable|string|max:200',
+            'q' => 'nullable|string|max:200',
+            'type' => 'nullable|string|in:'.implode(',', self::EVENT_TYPES),
+            'status' => 'nullable|string|in:'.implode(',', self::FILTER_STATUSES),
+            'sort' => 'nullable|string|in:'.implode(',', self::SORT_OPTIONS),
+            'booked_only' => 'sometimes|boolean',
+            'interested_only' => 'sometimes|boolean',
+        ]);
+
+        $validated['sort'] = $validated['sort'] ?? 'recent';
+
+        $cached = $this->isUserSpecificListFilter($validated)
+            ? $this->fetchCalendarMonth($validated)
+            : Cache::remember(
+                'events.visual2.calendar.v2:'.md5(json_encode(Arr::sortRecursive($validated))),
+                self::CALENDAR_TTL_SECONDS,
+                fn () => $this->fetchCalendarMonth($validated),
+            );
+
+        $events = Event::hydrate($cached['events'] ?? [])->all();
+
+        return response()->json([
+            'data' => $this->transformPage($events),
+            'total' => $cached['total'],
+        ]);
+    }
 
     public function gridData(Request $request): JsonResponse
     {
@@ -90,6 +125,129 @@ class EventVisualController extends Controller
             'has_more' => $cached['has_more'],
             'total' => $cached['total'],
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array{events: array<int, array<string, mixed>>, total: int}
+     */
+    private function fetchCalendarMonth(array $validated): array
+    {
+        $gridRange = $this->calendarGridRange($validated['month']);
+        $query = $this->buildCalendarFilteredQuery($validated, $gridRange);
+        $this->applyCalendarSort($query, $validated['sort']);
+
+        $rows = $query->get(['id', 'type', 'status', 'created_time', 'latitude', 'longitude', 'payload']);
+
+        return [
+            'events' => $rows->map(fn (Event $event) => $event->getAttributes())->values()->all(),
+            'total' => $rows->count(),
+        ];
+    }
+
+    /**
+     * Six-week Sunday-start grid covering the requested month.
+     *
+     * @return array{from_ts: int, to_ts: int}
+     */
+    private function calendarGridRange(string $month): array
+    {
+        $firstOfMonth = \DateTimeImmutable::createFromFormat('Y-m-d', $month.'-01');
+        $weekday = (int) $firstOfMonth->format('w');
+        $gridStart = $firstOfMonth->modify("-{$weekday} days")->setTime(0, 0, 0);
+        $gridEnd = $gridStart->modify('+41 days')->setTime(23, 59, 59);
+
+        return [
+            'from_ts' => $gridStart->getTimestamp(),
+            'to_ts' => $gridEnd->getTimestamp(),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     * @param  array{from_ts: int, to_ts: int}  $gridRange
+     * @return Builder<Event>
+     */
+    private function buildCalendarFilteredQuery(array $filters, array $gridRange): Builder
+    {
+        $query = Event::query();
+
+        $this->applyStatusFilter($query, $filters['status'] ?? null);
+        $this->applyTypeFilter($query, $filters['type'] ?? null);
+        $this->applyScheduleRangeFilter($query, $gridRange['from_ts'], $gridRange['to_ts']);
+        $this->applyScheduleDateFilter($query, $filters);
+        $this->applyLocationFilter($query, $filters['location'] ?? null);
+        $this->applySearchFilter($query, $filters['q'] ?? null);
+        $this->applyBookedFilter($query, filter_var($filters['booked_only'] ?? false, FILTER_VALIDATE_BOOLEAN));
+        $this->applyInterestedFilter($query, filter_var($filters['interested_only'] ?? false, FILTER_VALIDATE_BOOLEAN));
+
+        return $query;
+    }
+
+    /**
+     * @param  Builder<Event>  $query
+     */
+    private function applyScheduleRangeFilter(Builder $query, int $fromTs, int $toTs): void
+    {
+        $query->whereRaw(
+            'CAST(json_extract(payload, \'$.schedule.starts_at\') AS INTEGER) BETWEEN ? AND ?',
+            [$fromTs, $toTs],
+        );
+    }
+
+    /**
+     * Optional user date filters — applied to event start time, not created_time.
+     *
+     * @param  Builder<Event>  $query
+     * @param  array<string, mixed>  $filters
+     */
+    private function applyScheduleDateFilter(Builder $query, array $filters): void
+    {
+        if (! empty($filters['date_from'])) {
+            $query->whereRaw(
+                'CAST(json_extract(payload, \'$.schedule.starts_at\') AS INTEGER) >= ?',
+                [strtotime($filters['date_from'].' 00:00:00 UTC')],
+            );
+        }
+
+        if (! empty($filters['date_to'])) {
+            $query->whereRaw(
+                'CAST(json_extract(payload, \'$.schedule.starts_at\') AS INTEGER) <= ?',
+                [strtotime($filters['date_to'].' 23:59:59 UTC')],
+            );
+        }
+    }
+
+    /**
+     * @param  Builder<Event>  $query
+     */
+    private function applyCalendarSort(Builder $query, string $sort): void
+    {
+        if ($sort === 'price_asc') {
+            if ($this->hasMinPriceColumn()) {
+                $query->orderBy('min_price');
+            } else {
+                $query->orderByRaw("CAST(json_extract(payload, '$.pricing.min_price') AS REAL) ASC");
+            }
+
+            $query->orderByRaw("CAST(json_extract(payload, '$.schedule.starts_at') AS INTEGER) ASC");
+
+            return;
+        }
+
+        if ($sort === 'price_desc') {
+            if ($this->hasMinPriceColumn()) {
+                $query->orderByDesc('min_price');
+            } else {
+                $query->orderByRaw("CAST(json_extract(payload, '$.pricing.min_price') AS REAL) DESC");
+            }
+
+            $query->orderByRaw("CAST(json_extract(payload, '$.schedule.starts_at') AS INTEGER) ASC");
+
+            return;
+        }
+
+        $query->orderByRaw("CAST(json_extract(payload, '$.schedule.starts_at') AS INTEGER) ASC");
     }
 
     /**
