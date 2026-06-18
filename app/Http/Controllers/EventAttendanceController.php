@@ -26,6 +26,7 @@ class EventAttendanceController extends Controller
 
     public function destroy(Request $request, Event $event): JsonResponse
     {
+        // Deleting the row cancels future reminder scans; queued jobs no-op via deleteWhenMissingModels.
         EventAttendance::query()
             ->where('user_id', $request->user()->id)
             ->where('event_id', $event->id)

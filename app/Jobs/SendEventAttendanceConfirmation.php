@@ -12,10 +12,17 @@ class SendEventAttendanceConfirmation implements ShouldQueue
 {
     use Queueable;
 
+    /** Skip silently when the user unbooked before this job ran. */
+    public bool $deleteWhenMissingModels = true;
+
     public function __construct(public EventAttendance $attendance) {}
 
     public function handle(): void
     {
+        if (! $this->attendance->exists) {
+            return;
+        }
+
         $this->attendance->loadMissing(['user', 'event']);
 
         // Mail::to($this->attendance->user)->send(

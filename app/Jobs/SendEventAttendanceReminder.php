@@ -12,6 +12,9 @@ class SendEventAttendanceReminder implements ShouldQueue
 {
     use Queueable;
 
+    /** Skip silently when the user unbooked before this job ran. */
+    public bool $deleteWhenMissingModels = true;
+
     public function __construct(
         public EventAttendance $attendance,
         public string $window,
@@ -19,6 +22,10 @@ class SendEventAttendanceReminder implements ShouldQueue
 
     public function handle(): void
     {
+        if (! $this->attendance->exists) {
+            return;
+        }
+
         $this->attendance->loadMissing(['user', 'event']);
 
         $label = $this->window === 'three_days' ? '3-day' : '24-hour';

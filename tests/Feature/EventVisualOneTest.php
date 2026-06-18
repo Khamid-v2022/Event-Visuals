@@ -395,3 +395,52 @@ it('dispatches reminder jobs for due attendances', function () {
         return $job->window === 'three_days';
     });
 });
+
+it('does not dispatch reminders after unbooking', function () {
+    $user = User::factory()->create();
+    $startsAt = now()->addDays(3)->subMinutes(30)->timestamp;
+    $event = Event::factory()->for($user)->create([
+        'status' => 'published',
+        'created_time' => $startsAt,
+        'payload' => [
+            'name' => 'Cancelled Event',
+            'description' => '',
+            'schedule' => ['starts_at' => $startsAt, 'ends_at' => $startsAt + 3600],
+        ],
+    ]);
+
+    $attendance = EventAttendance::create([
+        'user_id' => $user->id,
+        'event_id' => $event->id,
+    ]);
+
+    $this->actingAs($user)
+        ->deleteJson(route('events.visual1.attendances.destroy', $event))
+        ->assertOk();
+
+    Queue::fake();
+
+    Artisan::call('attendances:send-reminders');
+
+    Queue::assertNotPushed(SendEventAttendanceReminder::class);
+});
+
+it('skips a queued reminder job when attendance was unbooked', function () {
+    $user = User::factory()->create();
+    $event = Event::factory()->for($user)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Gone Event', 'description' => ''],
+    ]);
+
+    $attendance = EventAttendance::create([
+        'user_id' => $user->id,
+        'event_id' => $event->id,
+    ]);
+
+    $job = new SendEventAttendanceReminder($attendance, 'three_days');
+    $attendance->delete();
+
+    $job->handle();
+
+    expect(EventAttendance::query()->count())->toBe(0);
+});
