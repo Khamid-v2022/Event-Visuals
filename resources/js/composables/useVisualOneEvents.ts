@@ -1,6 +1,9 @@
 import { useDebounceFn } from '@vueuse/core';
+import { router } from '@inertiajs/vue3';
 import { reactive, ref } from 'vue';
 import { pageOffset, perPageForVisualPage, type VisualEventSort } from '@/composables/visual-one/constants';
+import { DEFAULT_SORT, DEFAULT_STATUS, parseUrlState, syncUrlState } from '@/composables/visual-one/urlState';
+import { fetchJson } from '@/lib/fetchJson';
 import type {
     LocationSuggestion,
     VisualEvent,
@@ -8,20 +11,21 @@ import type {
     VisualEventPage,
 } from '@/types/event';
 
-const emptyFilters = (): VisualEventFilters => ({
+const defaultFilters = (): VisualEventFilters => ({
     date_from: '',
     date_to: '',
     location: '',
     q: '',
     type: '',
-    status: '',
+    status: DEFAULT_STATUS,
+    interested_only: false,
 });
 
 type FetchMode = 'replace' | 'append';
 
 export function useVisualOneEvents() {
-    const filters = reactive<VisualEventFilters>(emptyFilters());
-    const sort = ref<VisualEventSort>('recent');
+    const filters = reactive<VisualEventFilters>(defaultFilters());
+    const sort = ref<VisualEventSort>(DEFAULT_SORT);
     const events = ref<VisualEvent[]>([]);
     const page = ref(0);
     const hasMore = ref(false);
@@ -32,6 +36,16 @@ export function useVisualOneEvents() {
     const suggestions = ref<LocationSuggestion[]>([]);
     const suggestionLoading = ref(false);
     const pageCache = new Map<string, VisualEventPage>();
+
+    function initFromUrl() {
+        const state = parseUrlState(window.location.search);
+        Object.assign(filters, state.filters);
+        sort.value = state.sort;
+    }
+
+    function syncUrl() {
+        syncUrlState(filters, sort.value);
+    }
 
     function cacheKey(targetPage: number) {
         return JSON.stringify({
@@ -45,6 +59,7 @@ export function useVisualOneEvents() {
             q: filters.q.trim(),
             type: filters.type,
             status: filters.status,
+            interested_only: filters.interested_only,
         });
     }
 
@@ -60,7 +75,10 @@ export function useVisualOneEvents() {
         if (filters.location.trim()) params.set('location', filters.location.trim());
         if (filters.q.trim()) params.set('q', filters.q.trim());
         if (filters.type) params.set('type', filters.type);
-        if (filters.status) params.set('status', filters.status);
+        if (filters.status && filters.status !== DEFAULT_STATUS) {
+            params.set('status', filters.status);
+        }
+        if (filters.interested_only) params.set('interested_only', '1');
 
         return params;
     }
@@ -84,6 +102,7 @@ export function useVisualOneEvents() {
     async function requestPage(targetPage: number): Promise<VisualEventPage> {
         const params = buildParams(targetPage);
         const response = await fetch(`/events-visual-1/data?${params.toString()}`, {
+            credentials: 'same-origin',
             headers: { Accept: 'application/json' },
         });
 
@@ -97,7 +116,6 @@ export function useVisualOneEvents() {
         return payload;
     }
 
-    /** Warm the next page in the background so scroll feels instant. */
     function prefetchNextPage(fromPage: number) {
         if (!hasMore.value) {
             return;
@@ -108,9 +126,7 @@ export function useVisualOneEvents() {
             return;
         }
 
-        requestPage(nextPage).catch(() => {
-            // Prefetch is best-effort; scroll will retry on demand.
-        });
+        requestPage(nextPage).catch(() => {});
     }
 
     async function fetchPage(targetPage: number, mode: FetchMode = 'replace') {
@@ -146,11 +162,13 @@ export function useVisualOneEvents() {
 
     function applyFilters() {
         clearPageCache();
+        syncUrl();
         fetchPage(1, 'replace');
     }
 
     function applySort() {
         clearPageCache();
+        syncUrl();
         fetchPage(1, 'replace');
     }
 
@@ -160,6 +178,36 @@ export function useVisualOneEvents() {
         }
 
         fetchPage(page.value + 1, 'append');
+    }
+
+    async function toggleInterest(eventId: string, isAuthenticated: boolean) {
+        if (!isAuthenticated) {
+            router.visit('/login');
+
+            return;
+        }
+
+        const event = events.value.find((item) => item.id === eventId);
+        if (!event) {
+            return;
+        }
+
+        const wasInterested = event.interested ?? false;
+        event.interested = !wasInterested;
+
+        try {
+            await fetchJson<{ interested: boolean }>(`/events-visual-1/interests/${eventId}`, {
+                method: wasInterested ? 'DELETE' : 'POST',
+            });
+
+            if (filters.interested_only && wasInterested) {
+                events.value = events.value.filter((item) => item.id !== eventId);
+            }
+
+            clearPageCache();
+        } catch {
+            event.interested = wasInterested;
+        }
     }
 
     async function fetchLocationSuggestions() {
@@ -195,15 +243,11 @@ export function useVisualOneEvents() {
     }
 
     function resetFilters() {
-        filters.date_from = '';
-        filters.date_to = '';
-        filters.location = '';
-        filters.q = '';
-        filters.type = '';
-        filters.status = '';
-        sort.value = 'recent';
+        Object.assign(filters, defaultFilters());
+        sort.value = DEFAULT_SORT;
         clearSuggestions();
         clearPageCache();
+        syncUrl();
         fetchPage(1, 'replace');
     }
 
@@ -219,11 +263,13 @@ export function useVisualOneEvents() {
         hasLoadedOnce,
         suggestions,
         suggestionLoading,
+        initFromUrl,
         applyFilters,
         applySort,
         loadMore,
         fetchPage,
         resetFilters,
+        toggleInterest,
         debouncedFetchLocationSuggestions,
         clearSuggestions,
     };

@@ -39,6 +39,35 @@ it('returns paginated visual grid data with transformed events', function () {
         ->assertJsonStructure(['has_more']);
 });
 
+it('returns all events when status filter is all', function () {
+    $user = User::factory()->create();
+    Event::factory()->for($user)->create([
+        'status' => 'draft',
+        'payload' => ['name' => 'Draft Event', 'description' => ''],
+    ]);
+    Event::factory()->for($user)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Published Event', 'description' => ''],
+    ]);
+
+    $this->getJson(route('events.visual1.data', ['status' => 'all']))
+        ->assertOk()
+        ->assertJsonPath('total', 2);
+});
+
+it('serves cached grid data without error on repeated requests', function () {
+    $user = User::factory()->create();
+    Event::factory()->for($user)->count(3)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Cached Event', 'description' => ''],
+    ]);
+
+    $url = route('events.visual1.data', ['page' => 1, 'per_page' => 48, 'offset' => 0, 'sort' => 'recent']);
+
+    $this->getJson($url)->assertOk()->assertJsonCount(3, 'data');
+    $this->getJson($url)->assertOk()->assertJsonCount(3, 'data');
+});
+
 it('sorts visual grid data by price ascending', function () {
     $user = User::factory()->create();
     Event::factory()->for($user)->create([
@@ -160,4 +189,99 @@ it('returns non-overlapping events when the first page is larger than later page
     expect($pageOneIds)->toHaveCount(48);
     expect($pageTwoIds)->toHaveCount(24);
     expect($pageOneIds->intersect($pageTwoIds))->toBeEmpty();
+});
+
+it('marks events as interested for authenticated users', function () {
+    $user = User::factory()->create();
+    $owner = User::factory()->create();
+    $event = Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Saved Event', 'description' => ''],
+    ]);
+
+    // Warm the grid cache as a guest before login.
+    $this->getJson(route('events.visual1.data'))
+        ->assertJsonPath('data.0.interested', false);
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.interests.store', $event))
+        ->assertOk()
+        ->assertJsonPath('interested', true);
+
+    $this->actingAs($user)
+        ->getJson(route('events.visual1.data'))
+        ->assertOk()
+        ->assertJsonPath('data.0.interested', true);
+});
+
+it('filters the grid to interested events only', function () {
+    $user = User::factory()->create();
+    $owner = User::factory()->create();
+
+    $interested = Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Interested Event', 'description' => ''],
+    ]);
+    Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Other Event', 'description' => ''],
+    ]);
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.interests.store', $interested));
+
+    $this->actingAs($user)
+        ->getJson(route('events.visual1.data', ['interested_only' => true]))
+        ->assertOk()
+        ->assertJsonPath('total', 1)
+        ->assertJsonPath('data.0.name', 'Interested Event');
+});
+
+it('reflects a newly added interest when interested only was previously empty', function () {
+    $user = User::factory()->create();
+    $owner = User::factory()->create();
+    $event = Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Fresh Interest', 'description' => ''],
+    ]);
+
+    $interestedOnlyUrl = route('events.visual1.data', ['interested_only' => true]);
+
+    // Warm an empty interested-only response (would be cached without the fix).
+    $this->actingAs($user)
+        ->getJson($interestedOnlyUrl)
+        ->assertOk()
+        ->assertJsonPath('total', 0);
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.interests.store', $event))
+        ->assertOk();
+
+    $this->actingAs($user)
+        ->getJson($interestedOnlyUrl)
+        ->assertOk()
+        ->assertJsonPath('total', 1)
+        ->assertJsonPath('data.0.name', 'Fresh Interest');
+});
+
+it('removes an interested event', function () {
+    $user = User::factory()->create();
+    $owner = User::factory()->create();
+    $event = Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Saved Event', 'description' => ''],
+    ]);
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.interests.store', $event));
+
+    $this->actingAs($user)
+        ->deleteJson(route('events.visual1.interests.destroy', $event))
+        ->assertOk()
+        ->assertJsonPath('interested', false);
+
+    $this->actingAs($user)
+        ->getJson(route('events.visual1.data'))
+        ->assertOk()
+        ->assertJsonPath('data.0.interested', false);
 });

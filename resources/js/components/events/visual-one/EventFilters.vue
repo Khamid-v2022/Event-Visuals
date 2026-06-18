@@ -154,7 +154,7 @@ const selectClass =
                     <Tag class="size-3.5" />
                     Type
                 </label>
-                <select id="type" v-model="filters.type" :class="selectClass">
+                <select id="type" v-model="filters.type" :class="selectClass" @change="emit('apply')">
                     <option value="">All types</option>
                     <option v-for="type in EVENT_TYPES" :key="type" :value="type">
                         {{ typeLabel(type) }}
@@ -167,8 +167,8 @@ const selectClass =
                     <ToggleLeft class="size-3.5" />
                     Status
                 </label>
-                <select id="status" v-model="filters.status" :class="selectClass">
-                    <option value="">Published & sold out</option>
+                <select id="status" v-model="filters.status" :class="selectClass" @change="emit('apply')">
+                    <option value="all">All</option>
                     <option v-for="status in EVENT_STATUSES" :key="status" :value="status">
                         {{ statusLabel(status) }}
                     </option>

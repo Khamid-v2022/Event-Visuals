@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Event;
+use App\Models\EventInterest;
 use App\Services\GeocodingService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -18,6 +19,8 @@ class EventVisualController extends Controller
     ];
 
     private const EVENT_STATUSES = ['draft', 'published', 'cancelled', 'sold_out'];
+
+    private const FILTER_STATUSES = ['all', ...self::EVENT_STATUSES];
 
     private const SORT_OPTIONS = ['recent', 'price_asc', 'price_desc'];
 
@@ -56,8 +59,9 @@ class EventVisualController extends Controller
             'location' => 'nullable|string|max:200',
             'q' => 'nullable|string|max:200',
             'type' => 'nullable|string|in:'.implode(',', self::EVENT_TYPES),
-            'status' => 'nullable|string|in:'.implode(',', self::EVENT_STATUSES),
+            'status' => 'nullable|string|in:'.implode(',', self::FILTER_STATUSES),
             'sort' => 'nullable|string|in:'.implode(',', self::SORT_OPTIONS),
+            'interested_only' => 'sometimes|boolean',
         ]);
 
         $validated['per_page'] = min((int) ($validated['per_page'] ?? self::PER_PAGE_DEFAULT), self::PER_PAGE_MAX);
@@ -67,36 +71,64 @@ class EventVisualController extends Controller
             ? (int) $validated['offset']
             : ($page - 1) * $validated['per_page'];
 
-        $cacheKey = 'events.visual1.grid:'.md5(json_encode(Arr::sortRecursive($validated)));
+        $cached = $this->isInterestedOnlyFilter($validated)
+            ? $this->fetchGridPage($validated, $page)
+            : Cache::remember(
+                'events.visual1.grid.v3:'.md5(json_encode(Arr::sortRecursive($validated))),
+                self::GRID_TTL_SECONDS,
+                fn () => $this->fetchGridPage($validated, $page),
+            );
 
-        $payload = Cache::remember($cacheKey, self::GRID_TTL_SECONDS, function () use ($validated, $page) {
-            $query = $this->buildFilteredQuery($validated);
-            $this->applySort($query, $validated['sort']);
+        // Interest flags are per-user — apply after cache, never inside it.
+        $events = Event::hydrate($cached['events'] ?? [])->all();
 
-            $limit = $validated['per_page'];
-            $offset = $validated['offset'];
+        return response()->json([
+            'data' => $this->transformPage($events),
+            'current_page' => $cached['current_page'],
+            'has_more' => $cached['has_more'],
+            'total' => $cached['total'],
+        ]);
+    }
 
-            // Fetch one extra row to detect whether another page exists.
-            $rows = $query
-                ->skip($offset)
-                ->take($limit + 1)
-                ->get(['id', 'type', 'status', 'created_time', 'latitude', 'longitude', 'payload']);
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array{events: array<int, array<string, mixed>>, current_page: int, has_more: bool, total: int|null}
+     */
+    private function fetchGridPage(array $validated, int $page): array
+    {
+        $query = $this->buildFilteredQuery($validated);
+        $this->applySort($query, $validated['sort']);
 
-            $hasMore = $rows->count() > $limit;
+        $limit = $validated['per_page'];
+        $offset = $validated['offset'];
 
-            $total = $page === 1
-                ? $this->resolveTotal($validated)
-                : null;
+        // Fetch one extra row to detect whether another page exists.
+        $rows = $query
+            ->skip($offset)
+            ->take($limit + 1)
+            ->get(['id', 'type', 'status', 'created_time', 'latitude', 'longitude', 'payload']);
 
-            return [
-                'data' => $this->transformPage($rows->take($limit)->all()),
-                'current_page' => $page,
-                'has_more' => $hasMore,
-                'total' => $total,
-            ];
-        });
+        $hasMore = $rows->count() > $limit;
 
-        return response()->json($payload);
+        $total = $page === 1
+            ? $this->resolveTotal($validated)
+            : null;
+
+        return [
+            // Store plain rows — serializing Eloquent models breaks on cache read.
+            'events' => $rows->take($limit)->map(fn (Event $event) => $event->getAttributes())->values()->all(),
+            'current_page' => $page,
+            'has_more' => $hasMore,
+            'total' => $total,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     */
+    private function isInterestedOnlyFilter(array $filters): bool
+    {
+        return filter_var($filters['interested_only'] ?? false, FILTER_VALIDATE_BOOLEAN);
     }
 
     public function locationSuggestions(Request $request): JsonResponse
@@ -147,6 +179,7 @@ class EventVisualController extends Controller
         $this->applyDateFilter($query, $filters);
         $this->applyLocationFilter($query, $filters['location'] ?? null);
         $this->applySearchFilter($query, $filters['q'] ?? null);
+        $this->applyInterestedFilter($query, filter_var($filters['interested_only'] ?? false, FILTER_VALIDATE_BOOLEAN));
 
         return $query;
     }
@@ -156,7 +189,11 @@ class EventVisualController extends Controller
      */
     private function resolveTotal(array $filters): int
     {
-        $countKey = 'events.visual1.total:'.md5(json_encode(Arr::sortRecursive(Arr::except($filters, ['page']))));
+        if ($this->isInterestedOnlyFilter($filters)) {
+            return $this->buildFilteredQuery($filters)->count();
+        }
+
+        $countKey = 'events.visual1.total.v3:'.md5(json_encode(Arr::sortRecursive(Arr::except($filters, ['page']))));
 
         return (int) Cache::remember($countKey, self::TOTAL_TTL_SECONDS, function () use ($filters) {
             return $this->buildFilteredQuery($filters)->count();
@@ -199,7 +236,57 @@ class EventVisualController extends Controller
      */
     private function transformPage(array $events): array
     {
-        return collect($events)->map(fn (Event $event) => $this->transform($event))->all();
+        $eventIds = collect($events)->pluck('id')->all();
+        $interestedIds = $this->interestedEventIds($eventIds);
+
+        return collect($events)
+            ->map(fn (Event $event) => [
+                ...$this->transform($event),
+                'interested' => isset($interestedIds[$event->id]),
+            ])
+            ->all();
+    }
+
+    /**
+     * @param  array<int, string>  $eventIds
+     * @return array<string, true>
+     */
+    private function interestedEventIds(array $eventIds): array
+    {
+        $user = auth()->user();
+
+        if ($user === null || $eventIds === []) {
+            return [];
+        }
+
+        return EventInterest::query()
+            ->where('user_id', $user->id)
+            ->whereIn('event_id', $eventIds)
+            ->pluck('event_id')
+            ->mapWithKeys(fn (string $id) => [$id => true])
+            ->all();
+    }
+
+    /**
+     * @param  Builder<Event>  $query
+     */
+    private function applyInterestedFilter(Builder $query, bool $interestedOnly): void
+    {
+        if (! $interestedOnly) {
+            return;
+        }
+
+        $user = auth()->user();
+
+        if ($user === null) {
+            $query->whereRaw('0 = 1');
+
+            return;
+        }
+
+        $query->whereIn('events.id', EventInterest::query()
+            ->where('user_id', $user->id)
+            ->select('event_id'));
     }
 
     /**
@@ -207,13 +294,13 @@ class EventVisualController extends Controller
      */
     private function applyStatusFilter(Builder $query, ?string $status): void
     {
-        if ($status !== null && trim($status) !== '') {
-            $query->where('status', $status);
+        $status = $status !== null ? trim($status) : '';
 
+        if ($status === '' || $status === 'all') {
             return;
         }
 
-        $query->whereIn('status', ['published', 'sold_out']);
+        $query->where('status', $status);
     }
 
     /**

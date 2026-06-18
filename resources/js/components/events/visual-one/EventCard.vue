@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Calendar, Ticket } from '@lucide/vue';
+import { Calendar, Heart, Ticket } from '@lucide/vue';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { formatCardDate, formatPrice, statusLabel, statusVariant, typeLabel } from '@/lib/eventFormat';
 import { getEventTypeTheme } from '@/lib/eventTypeTheme';
 import { cn } from '@/lib/utils';
@@ -13,6 +14,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
     select: [event: VisualEvent];
+    toggleInterest: [eventId: string];
 }>();
 
 const theme = computed(() => getEventTypeTheme(props.event.type));
@@ -35,6 +37,30 @@ const theme = computed(() => getEventTypeTheme(props.event.type));
           loading="lazy"
         />
         <div class="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent" />
+
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon-sm"
+          :class="cn(
+            'absolute top-3 right-3 size-8 rounded-full shadow-md backdrop-blur-sm transition-colors',
+            event.interested
+              ? 'bg-white ring-2 ring-rose-400/60 hover:bg-white'
+              : 'bg-black/35 hover:bg-black/45',
+          )"
+          :aria-pressed="event.interested ?? false"
+          :aria-label="event.interested ? 'Remove from interested' : 'Mark as interested'"
+          @click.stop="emit('toggleInterest', event.id)"
+        >
+          <Heart
+            :class="cn(
+              'size-4 transition-colors',
+              event.interested
+                ? 'fill-rose-500 text-rose-500'
+                : 'text-white drop-shadow-sm',
+            )"
+          />
+        </Button>
 
         <div class="absolute top-3 left-3 flex flex-wrap gap-1.5">
           <Badge variant="secondary" class="bg-background/90 text-foreground backdrop-blur-sm">
