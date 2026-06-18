@@ -108,7 +108,7 @@ class EventSeeder extends Seeder
         $done = 0;
 
         while ($remaining > 0) {
-            $batchSize = min(self::CHUNK, $remaining);
+            $batchSize = min($this->chunkSize(), $remaining);
             $batch = [];
 
             for ($i = 0; $i < $batchSize; $i++) {
@@ -291,6 +291,12 @@ class EventSeeder extends Seeder
         }
 
         return 0;
+    }
+
+    private function chunkSize(): int
+    {
+        // SQLite caps bound parameters per statement (~999); 10 columns × 50 rows stays safe.
+        return DB::connection()->getDriverName() === 'sqlite' ? 50 : self::CHUNK;
     }
 
     private function withSeedingPragmas(callable $callback): void
