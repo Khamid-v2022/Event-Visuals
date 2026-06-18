@@ -8,12 +8,6 @@ use Illuminate\Support\Facades\Http;
 uses(RefreshDatabase::class);
 
 it('returns paginated visual grid data with transformed events', function () {
-    Http::fake([
-        'nominatim.openstreetmap.org/*' => Http::response([
-            'display_name' => 'New York, United States',
-        ], 200),
-    ]);
-
     $user = User::factory()->create();
     Event::factory()->for($user)->create([
         'type' => 'meetup',
@@ -39,9 +33,34 @@ it('returns paginated visual grid data with transformed events', function () {
         ->assertOk()
         ->assertJsonPath('total', 1)
         ->assertJsonPath('data.0.name', 'Summer Climate Night')
-        ->assertJsonPath('data.0.address', 'New York, United States')
-        ->assertJsonPath('data.0.images.0', '/imgs/events/event1-1.png')
-        ->assertJsonCount(3, 'data.0.images');
+        ->assertJsonPath('data.0.latitude', 40.7128)
+        ->assertJsonPath('data.0.longitude', -74.006)
+        ->assertJsonCount(3, 'data.0.images')
+        ->assertJsonStructure(['has_more']);
+});
+
+it('sorts visual grid data by price ascending', function () {
+    $user = User::factory()->create();
+    Event::factory()->for($user)->create([
+        'status' => 'published',
+        'created_time' => 1_700_000_000,
+        'payload' => [
+            'name' => 'Cheap Event',
+            'pricing' => ['currency' => 'USD', 'min_price' => '10.00'],
+        ],
+    ]);
+    Event::factory()->for($user)->create([
+        'status' => 'published',
+        'created_time' => 1_700_000_100,
+        'payload' => [
+            'name' => 'Premium Event',
+            'pricing' => ['currency' => 'USD', 'min_price' => '250.00'],
+        ],
+    ]);
+
+    $this->getJson(route('events.visual1.data', ['sort' => 'price_asc']))
+        ->assertOk()
+        ->assertJsonPath('data.0.name', 'Cheap Event');
 });
 
 it('filters visual grid data by search term', function () {
@@ -101,4 +120,44 @@ it('returns location suggestions for the location filter', function () {
         ->assertJsonPath('data.0.label', 'Copenhagen, Denmark')
         ->assertJsonPath('data.0.lat', 55.6761)
         ->assertJsonCount(2, 'data');
+});
+
+it('resolves a human-readable address for event detail', function () {
+    Http::fake([
+        'nominatim.openstreetmap.org/*' => Http::response([
+            'display_name' => 'New York, United States',
+        ], 200),
+    ]);
+
+    $this->getJson(route('events.visual1.address', ['lat' => 40.7128, 'lng' => -74.0060]))
+        ->assertOk()
+        ->assertJsonPath('address', 'New York, United States');
+});
+
+it('returns non-overlapping events when the first page is larger than later pages', function () {
+    $user = User::factory()->create();
+
+    for ($index = 1; $index <= 80; $index++) {
+        Event::factory()->for($user)->create([
+            'status' => 'published',
+            'created_time' => 1_700_000_000 + $index,
+            'payload' => ['name' => "Event {$index}", 'description' => ''],
+        ]);
+    }
+
+    $pageOneIds = collect($this->getJson(route('events.visual1.data', [
+        'page' => 1,
+        'per_page' => 48,
+        'offset' => 0,
+    ]))->json('data'))->pluck('id');
+
+    $pageTwoIds = collect($this->getJson(route('events.visual1.data', [
+        'page' => 2,
+        'per_page' => 24,
+        'offset' => 48,
+    ]))->json('data'))->pluck('id');
+
+    expect($pageOneIds)->toHaveCount(48);
+    expect($pageTwoIds)->toHaveCount(24);
+    expect($pageOneIds->intersect($pageTwoIds))->toBeEmpty();
 });

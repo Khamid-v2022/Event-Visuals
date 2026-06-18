@@ -1,46 +1,65 @@
 <script setup lang="ts">
 import { Head } from '@inertiajs/vue3';
-import { onMounted, ref } from 'vue';
+import { useIntersectionObserver } from '@vueuse/core';
+import { computed, onMounted, ref, watch } from 'vue';
 import EventCard from '@/components/events/visual-one/EventCard.vue';
+import EventCardSkeletonGrid from '@/components/events/visual-one/EventCardSkeletonGrid.vue';
 import EventDetailModal from '@/components/events/visual-one/EventDetailModal.vue';
 import EventFilters from '@/components/events/visual-one/EventFilters.vue';
-import EventPagination from '@/components/events/visual-one/EventPagination.vue';
+import EventSortBar from '@/components/events/visual-one/EventSortBar.vue';
 import { useVisualOneEvents } from '@/composables/useVisualOneEvents';
+import { EVENT_GRID_CLASS } from '@/composables/visual-one/constants';
 import type { VisualEvent } from '@/types/event';
 
 const {
     filters,
+    sort,
     events,
-    page,
-    lastPage,
+    hasMore,
     total,
     loading,
+    loadingMore,
     hasLoadedOnce,
     suggestions,
     suggestionLoading,
-    goToPage,
+    loadMore,
     fetchPage,
     resetFilters,
     debouncedFetchLocationSuggestions,
     applyFilters,
+    applySort,
     clearSuggestions,
 } = useVisualOneEvents();
 
 const selectedEvent = ref<VisualEvent | null>(null);
 const modalOpen = ref(false);
+const sentinel = ref<HTMLElement | null>(null);
+
+const canLoadMore = computed(
+    () => hasLoadedOnce.value && hasMore.value && !loading.value && !loadingMore.value,
+);
+
+useIntersectionObserver(sentinel, ([entry]) => {
+    if (entry?.isIntersecting && canLoadMore.value) {
+        loadMore();
+    }
+});
+
+// Loading may finish while the sentinel is already visible — IntersectionObserver won't fire again.
+watch([loading, loadingMore], () => {
+    if (!canLoadMore.value || !sentinel.value) {
+        return;
+    }
+
+    const { top } = sentinel.value.getBoundingClientRect();
+    if (top <= window.innerHeight) {
+        loadMore();
+    }
+});
 
 function openEvent(event: VisualEvent) {
     selectedEvent.value = event;
     modalOpen.value = true;
-}
-
-function onSelectSuggestion(value: string) {
-    filters.location = value;
-    clearSuggestions();
-}
-
-function onSuggestLocations() {
-    debouncedFetchLocationSuggestions();
 }
 
 function onApplyFilters() {
@@ -48,14 +67,12 @@ function onApplyFilters() {
     applyFilters();
 }
 
-function onResetFilters() {
+function onSelectSuggestion(value: string) {
+    filters.location = value;
     clearSuggestions();
-    resetFilters();
 }
 
-onMounted(() => {
-    fetchPage(1);
-});
+onMounted(() => fetchPage(1, 'replace'));
 </script>
 
 <template>
@@ -68,8 +85,8 @@ onMounted(() => {
             :suggestions="suggestions"
             :suggestion-loading="suggestionLoading"
             @apply="onApplyFilters"
-            @reset="onResetFilters"
-            @suggest="onSuggestLocations"
+            @reset="resetFilters()"
+            @suggest="debouncedFetchLocationSuggestions()"
             @select-suggestion="onSelectSuggestion"
         />
 
@@ -80,60 +97,40 @@ onMounted(() => {
                     <template v-if="total > 0">
                         {{ total.toLocaleString() }} event{{ total === 1 ? '' : 's' }}
                     </template>
-                    <template v-else-if="hasLoadedOnce && !loading">No events found</template>
+                    <template v-else-if="hasLoadedOnce && !loading && !loadingMore">No events found</template>
                 </p>
             </header>
 
-            <EventPagination
-                v-if="lastPage > 1"
-                :page="page"
-                :last-page="lastPage"
-                :loading="loading"
-                class="justify-end"
-                @go-to-page="goToPage"
-            />
+            <EventSortBar v-model="sort" :loading="loading" @change="applySort()" />
 
-            <!-- Loading skeleton -->
-            <div
-                v-if="loading && !hasLoadedOnce"
-                class="grid gap-5 sm:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3"
-            >
-                <div
-                    v-for="n in 6"
-                    :key="n"
-                    class="animate-pulse overflow-hidden rounded-2xl border border-border/50 bg-card"
-                >
-                    <div class="aspect-[16/10] bg-muted" />
-                    <div class="space-y-3 p-4">
-                        <div class="h-4 w-3/4 rounded bg-muted" />
-                        <div class="h-3 w-full rounded bg-muted" />
-                        <div class="h-3 w-2/3 rounded bg-muted" />
-                    </div>
+            <EventCardSkeletonGrid v-if="loading" />
+
+            <template v-else>
+                <div :class="EVENT_GRID_CLASS">
+                    <EventCard
+                        v-for="event in events"
+                        :key="event.id"
+                        :event="event"
+                        @select="openEvent"
+                    />
                 </div>
-            </div>
 
-            <!-- Results grid -->
-            <div
-                v-else
-                class="grid gap-5 transition-opacity duration-300 sm:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3"
-                :class="loading ? 'pointer-events-none opacity-50' : 'opacity-100'"
-            >
-                <EventCard
-                    v-for="event in events"
-                    :key="event.id"
-                    :event="event"
-                    @select="openEvent"
+                <EventCardSkeletonGrid v-if="loadingMore" :count="6" />
+
+                <div
+                    v-if="hasLoadedOnce && hasMore"
+                    ref="sentinel"
+                    class="h-px w-full"
+                    aria-hidden="true"
                 />
-            </div>
 
-            <EventPagination
-                v-if="lastPage > 1"
-                :page="page"
-                :last-page="lastPage"
-                :loading="loading"
-                class="pt-1"
-                @go-to-page="goToPage"
-            />
+                <p
+                    v-if="hasLoadedOnce && events.length > 0 && !hasMore"
+                    class="py-4 text-center text-sm text-muted-foreground"
+                >
+                    All events loaded
+                </p>
+            </template>
 
             <EventDetailModal v-model:open="modalOpen" :event="selectedEvent" />
         </div>

@@ -1,5 +1,6 @@
 import { useDebounceFn } from '@vueuse/core';
 import { reactive, ref } from 'vue';
+import { pageOffset, perPageForVisualPage, type VisualEventSort } from '@/composables/visual-one/constants';
 import type {
     LocationSuggestion,
     VisualEvent,
@@ -16,13 +17,17 @@ const emptyFilters = (): VisualEventFilters => ({
     status: '',
 });
 
+type FetchMode = 'replace' | 'append';
+
 export function useVisualOneEvents() {
     const filters = reactive<VisualEventFilters>(emptyFilters());
+    const sort = ref<VisualEventSort>('recent');
     const events = ref<VisualEvent[]>([]);
     const page = ref(0);
-    const lastPage = ref(1);
+    const hasMore = ref(false);
     const total = ref(0);
     const loading = ref(false);
+    const loadingMore = ref(false);
     const hasLoadedOnce = ref(false);
     const suggestions = ref<LocationSuggestion[]>([]);
     const suggestionLoading = ref(false);
@@ -31,6 +36,9 @@ export function useVisualOneEvents() {
     function cacheKey(targetPage: number) {
         return JSON.stringify({
             page: targetPage,
+            per_page: perPageForVisualPage(targetPage),
+            offset: pageOffset(targetPage),
+            sort: sort.value,
             date_from: filters.date_from,
             date_to: filters.date_to,
             location: filters.location.trim(),
@@ -41,7 +49,12 @@ export function useVisualOneEvents() {
     }
 
     function buildParams(targetPage: number) {
-        const params = new URLSearchParams({ page: String(targetPage) });
+        const params = new URLSearchParams({
+            page: String(targetPage),
+            per_page: String(perPageForVisualPage(targetPage)),
+            offset: String(pageOffset(targetPage)),
+            sort: sort.value,
+        });
         if (filters.date_from) params.set('date_from', filters.date_from);
         if (filters.date_to) params.set('date_to', filters.date_to);
         if (filters.location.trim()) params.set('location', filters.location.trim());
@@ -52,94 +65,101 @@ export function useVisualOneEvents() {
         return params;
     }
 
-    async function fetchPage(targetPage: number) {
-        const key = cacheKey(targetPage);
-        const cached = pageCache.get(key);
+    function applyPayload(payload: VisualEventPage, append: boolean) {
+        events.value = append ? [...events.value, ...payload.data] : payload.data;
+        page.value = payload.current_page;
+        hasMore.value = payload.has_more ?? false;
 
+        if (payload.total !== null && payload.total !== undefined) {
+            total.value = payload.total;
+        }
+
+        hasLoadedOnce.value = true;
+    }
+
+    function clearPageCache() {
+        pageCache.clear();
+    }
+
+    async function requestPage(targetPage: number): Promise<VisualEventPage> {
+        const params = buildParams(targetPage);
+        const response = await fetch(`/events-visual-1/data?${params.toString()}`, {
+            headers: { Accept: 'application/json' },
+        });
+
+        if (!response.ok) {
+            throw new Error(`Request failed (${response.status})`);
+        }
+
+        const payload = (await response.json()) as VisualEventPage;
+        pageCache.set(cacheKey(targetPage), payload);
+
+        return payload;
+    }
+
+    /** Warm the next page in the background so scroll feels instant. */
+    function prefetchNextPage(fromPage: number) {
+        if (!hasMore.value) {
+            return;
+        }
+
+        const nextPage = fromPage + 1;
+        if (pageCache.has(cacheKey(nextPage))) {
+            return;
+        }
+
+        requestPage(nextPage).catch(() => {
+            // Prefetch is best-effort; scroll will retry on demand.
+        });
+    }
+
+    async function fetchPage(targetPage: number, mode: FetchMode = 'replace') {
+        const append = mode === 'append';
+
+        if (append && (loadingMore.value || loading.value || !hasMore.value)) {
+            return;
+        }
+
+        const cached = pageCache.get(cacheKey(targetPage));
         if (cached) {
-            events.value = cached.data;
-            page.value = cached.current_page;
-            lastPage.value = cached.last_page;
-            total.value = cached.total;
-            hasLoadedOnce.value = true;
-            prefetchPage(targetPage + 1);
-            prefetchPage(targetPage - 1);
+            applyPayload(cached, append);
+            prefetchNextPage(targetPage);
 
             return;
         }
 
-        loading.value = true;
-
-        const params = buildParams(targetPage);
+        if (append) {
+            loadingMore.value = true;
+        } else {
+            loading.value = true;
+        }
 
         try {
-            const response = await fetch(`/events-visual-1/data?${params.toString()}`, {
-                headers: { Accept: 'application/json' },
-            });
-
-            if (!response.ok) {
-                throw new Error(`Request failed (${response.status})`);
-            }
-
-            const payload = (await response.json()) as VisualEventPage;
-            pageCache.set(key, payload);
-            events.value = payload.data;
-            page.value = payload.current_page;
-            lastPage.value = payload.last_page;
-            total.value = payload.total;
-            hasLoadedOnce.value = true;
-            prefetchPage(targetPage + 1);
-            prefetchPage(targetPage - 1);
+            const payload = await requestPage(targetPage);
+            applyPayload(payload, append);
+            prefetchNextPage(targetPage);
         } finally {
             loading.value = false;
+            loadingMore.value = false;
         }
     }
 
     function applyFilters() {
-        pageCache.clear();
-        fetchPage(1);
+        clearPageCache();
+        fetchPage(1, 'replace');
     }
 
-    function goToPage(nextPage: number) {
-        if (loading.value || lastPage.value < 1) {
-            return;
-        }
-
-        const target = Math.min(Math.max(1, Math.trunc(nextPage)), lastPage.value);
-
-        if (target === page.value) {
-            return;
-        }
-
-        fetchPage(target);
+    function applySort() {
+        clearPageCache();
+        fetchPage(1, 'replace');
     }
 
-    async function prefetchPage(targetPage: number) {
-        if (targetPage < 1) {
+    function loadMore() {
+        if (!hasMore.value || loading.value || loadingMore.value) {
             return;
         }
 
-        const key = cacheKey(targetPage);
-        if (pageCache.has(key)) {
-            return;
-        }
-
-        const params = buildParams(targetPage);
-
-        try {
-            const response = await fetch(`/events-visual-1/data?${params.toString()}`, {
-                headers: { Accept: 'application/json' },
-            });
-
-            if (!response.ok) {
-                return;
-            }
-
-            const payload = (await response.json()) as VisualEventPage;
-            pageCache.set(key, payload);
-        } catch {
-            // Prefetch is opportunistic; ignore failures and let real navigation retry.
-        }
+        fetchPage(page.value + 1, 'append');
     }
 
     async function fetchLocationSuggestions() {
@@ -181,26 +201,29 @@ export function useVisualOneEvents() {
         filters.q = '';
         filters.type = '';
         filters.status = '';
+        sort.value = 'recent';
         clearSuggestions();
-        pageCache.clear();
-        fetchPage(1);
+        clearPageCache();
+        fetchPage(1, 'replace');
     }
 
     return {
         filters,
+        sort,
         events,
         page,
-        lastPage,
+        hasMore,
         total,
         loading,
+        loadingMore,
         hasLoadedOnce,
         suggestions,
         suggestionLoading,
         applyFilters,
-        goToPage,
+        applySort,
+        loadMore,
         fetchPage,
         resetFilters,
-        fetchLocationSuggestions,
         debouncedFetchLocationSuggestions,
         clearSuggestions,
     };

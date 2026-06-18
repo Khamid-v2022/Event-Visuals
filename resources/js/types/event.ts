@@ -30,7 +30,6 @@ export interface VisualEvent {
     schedule: EventSchedule;
     pricing: EventPricing | null;
     tags: string[];
-    address: string | null;
     latitude: number;
     longitude: number;
     images: string[];
@@ -48,8 +47,8 @@ export interface VisualEventFilters {
 export interface VisualEventPage {
     data: VisualEvent[];
     current_page: number;
-    last_page: number;
-    total: number;
+    has_more?: boolean;
+    total: number | null;
 }
 
 export interface LocationSuggestion {

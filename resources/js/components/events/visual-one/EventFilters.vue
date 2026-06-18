@@ -175,18 +175,15 @@ const selectClass =
                 </select>
             </div>
 
-            <div class="flex flex-col gap-2 border-t border-border/60 pt-4">
-                <Button type="submit" :disabled="loading" class="w-full">
+            <div class="flex gap-2 border-t border-border/60 pt-4">
+                <Button type="submit" :disabled="loading" class="flex-1">
                     <Filter class="size-4" />
                     Filter
                 </Button>
-                <Button type="button" variant="outline" :disabled="loading" class="w-full" @click="emit('reset')">
+                <Button type="button" variant="outline" :disabled="loading" class="flex-1" @click="emit('reset')">
                     <RotateCcw class="size-4" />
                     Reset
                 </Button>
-                <span v-if="loading" class="text-center text-xs text-muted-foreground animate-pulse">
-                    Loading...
-                </span>
             </div>
         </form>
 

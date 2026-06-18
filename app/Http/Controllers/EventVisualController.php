@@ -9,6 +9,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 
 class EventVisualController extends Controller
 {
@@ -17,6 +18,13 @@ class EventVisualController extends Controller
     ];
 
     private const EVENT_STATUSES = ['draft', 'published', 'cancelled', 'sold_out'];
+
+    private const SORT_OPTIONS = ['recent', 'price_asc', 'price_desc'];
+
+    private const PER_PAGE_MAX = 48;
+
+    private const PER_PAGE_DEFAULT = 48;
+
     /** Alternate between two local image sets so adjacent cards feel less repetitive. */
     private const EVENT_IMAGE_SETS = [
         [
@@ -31,7 +39,9 @@ class EventVisualController extends Controller
         ],
     ];
 
-    private const GRID_TTL_SECONDS = 60 * 5;
+    private const GRID_TTL_SECONDS = 60 * 10;
+
+    private const TOTAL_TTL_SECONDS = 60 * 15;
 
     public function __construct(private GeocodingService $geocoding) {}
 
@@ -39,35 +49,50 @@ class EventVisualController extends Controller
     {
         $validated = $request->validate([
             'page' => 'sometimes|integer|min:1',
+            'per_page' => 'sometimes|integer|min:1|max:'.self::PER_PAGE_MAX,
+            'offset' => 'sometimes|integer|min:0',
             'date_from' => 'nullable|date',
             'date_to' => 'nullable|date|after_or_equal:date_from',
             'location' => 'nullable|string|max:200',
             'q' => 'nullable|string|max:200',
             'type' => 'nullable|string|in:'.implode(',', self::EVENT_TYPES),
             'status' => 'nullable|string|in:'.implode(',', self::EVENT_STATUSES),
+            'sort' => 'nullable|string|in:'.implode(',', self::SORT_OPTIONS),
         ]);
+
+        $validated['per_page'] = min((int) ($validated['per_page'] ?? self::PER_PAGE_DEFAULT), self::PER_PAGE_MAX);
+        $validated['sort'] = $validated['sort'] ?? 'recent';
+        $page = (int) ($validated['page'] ?? 1);
+        $validated['offset'] = array_key_exists('offset', $validated)
+            ? (int) $validated['offset']
+            : ($page - 1) * $validated['per_page'];
 
         $cacheKey = 'events.visual1.grid:'.md5(json_encode(Arr::sortRecursive($validated)));
 
-        $payload = Cache::remember($cacheKey, self::GRID_TTL_SECONDS, function () use ($validated) {
-            $query = Event::query();
+        $payload = Cache::remember($cacheKey, self::GRID_TTL_SECONDS, function () use ($validated, $page) {
+            $query = $this->buildFilteredQuery($validated);
+            $this->applySort($query, $validated['sort']);
 
-            $this->applyStatusFilter($query, $validated['status'] ?? null);
-            $this->applyTypeFilter($query, $validated['type'] ?? null);
-            $this->applyDateFilter($query, $validated);
-            $this->applyLocationFilter($query, $validated['location'] ?? null);
-            $this->applySearchFilter($query, $validated['q'] ?? null);
+            $limit = $validated['per_page'];
+            $offset = $validated['offset'];
 
-            $events = $query
-                ->orderBy('created_time')
-                ->paginate(12, ['*'], 'page', (int) ($validated['page'] ?? 1))
-                ->withQueryString();
+            // Fetch one extra row to detect whether another page exists.
+            $rows = $query
+                ->skip($offset)
+                ->take($limit + 1)
+                ->get(['id', 'type', 'status', 'created_time', 'latitude', 'longitude', 'payload']);
+
+            $hasMore = $rows->count() > $limit;
+
+            $total = $page === 1
+                ? $this->resolveTotal($validated)
+                : null;
 
             return [
-                'data' => collect($events->items())->map(fn (Event $event) => $this->transform($event))->all(),
-                'current_page' => $events->currentPage(),
-                'last_page' => $events->lastPage(),
-                'total' => $events->total(),
+                'data' => $this->transformPage($rows->take($limit)->all()),
+                'current_page' => $page,
+                'has_more' => $hasMore,
+                'total' => $total,
             ];
         });
 
@@ -88,6 +113,93 @@ class EventVisualController extends Controller
         return response()->json([
             'data' => $this->geocoding->suggest($query)->all(),
         ]);
+    }
+
+    public function resolveAddress(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'lat' => 'required|numeric|between:-90,90',
+            'lng' => 'required|numeric|between:-180,180',
+        ]);
+
+        $latitude = (float) $validated['lat'];
+        $longitude = (float) $validated['lng'];
+
+        if ($latitude === 0.0 && $longitude === 0.0) {
+            return response()->json(['address' => null]);
+        }
+
+        return response()->json([
+            'address' => $this->geocoding->reverse($latitude, $longitude),
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     * @return Builder<Event>
+     */
+    private function buildFilteredQuery(array $filters): Builder
+    {
+        $query = Event::query();
+
+        $this->applyStatusFilter($query, $filters['status'] ?? null);
+        $this->applyTypeFilter($query, $filters['type'] ?? null);
+        $this->applyDateFilter($query, $filters);
+        $this->applyLocationFilter($query, $filters['location'] ?? null);
+        $this->applySearchFilter($query, $filters['q'] ?? null);
+
+        return $query;
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     */
+    private function resolveTotal(array $filters): int
+    {
+        $countKey = 'events.visual1.total:'.md5(json_encode(Arr::sortRecursive(Arr::except($filters, ['page']))));
+
+        return (int) Cache::remember($countKey, self::TOTAL_TTL_SECONDS, function () use ($filters) {
+            return $this->buildFilteredQuery($filters)->count();
+        });
+    }
+
+    /**
+     * @param  Builder<Event>  $query
+     */
+    private function applySort(Builder $query, string $sort): void
+    {
+        if ($sort === 'price_asc') {
+            if ($this->hasMinPriceColumn()) {
+                $query->orderBy('min_price')->orderByDesc('created_time');
+            } else {
+                $query->orderByRaw("CAST(json_extract(payload, '$.pricing.min_price') AS REAL) ASC")
+                    ->orderByDesc('created_time');
+            }
+
+            return;
+        }
+
+        if ($sort === 'price_desc') {
+            if ($this->hasMinPriceColumn()) {
+                $query->orderByDesc('min_price')->orderByDesc('created_time');
+            } else {
+                $query->orderByRaw("CAST(json_extract(payload, '$.pricing.min_price') AS REAL) DESC")
+                    ->orderByDesc('created_time');
+            }
+
+            return;
+        }
+
+        $query->orderByDesc('created_time');
+    }
+
+    /**
+     * @param  array<int, Event>  $events
+     * @return array<int, array<string, mixed>>
+     */
+    private function transformPage(array $events): array
+    {
+        return collect($events)->map(fn (Event $event) => $this->transform($event))->all();
     }
 
     /**
@@ -138,9 +250,9 @@ class EventVisualController extends Controller
             return;
         }
 
+        // Forward-geocode the place name, then filter by proximity.
         $coords = $this->geocoding->forward($location);
         if ($coords === null) {
-            // Unknown place — return no rows instead of the full catalogue.
             $query->whereRaw('0 = 1');
 
             return;
@@ -188,12 +300,6 @@ class EventVisualController extends Controller
         $latitude = $event->latitude ?? (float) ($payload['location']['lat'] ?? 0);
         $longitude = $event->longitude ?? (float) ($payload['location']['lng'] ?? 0);
 
-        $address = null;
-        if ($latitude !== 0.0 || $longitude !== 0.0) {
-            $address = $this->geocoding->reverse($latitude, $longitude)
-                ?? sprintf('%.4f, %.4f', $latitude, $longitude);
-        }
-
         return [
             'id' => $event->id,
             'type' => $event->type,
@@ -209,7 +315,6 @@ class EventVisualController extends Controller
             ],
             'pricing' => $payload['pricing'] ?? null,
             'tags' => $payload['tags'] ?? [],
-            'address' => $address,
             'latitude' => $latitude,
             'longitude' => $longitude,
             'images' => $this->resolveImages($event),
@@ -217,8 +322,6 @@ class EventVisualController extends Controller
     }
 
     /**
-     * Use a stable hash so the same event always keeps the same image set.
-     *
      * @return array<int, string>
      */
     private function resolveImages(Event $event): array
@@ -226,6 +329,11 @@ class EventVisualController extends Controller
         $index = crc32($event->id) % count(self::EVENT_IMAGE_SETS);
 
         return self::EVENT_IMAGE_SETS[$index];
+    }
+
+    private function hasMinPriceColumn(): bool
+    {
+        return Cache::rememberForever('events.has_min_price_column', fn () => Schema::hasColumn('events', 'min_price'));
     }
 
     private function escapeLike(string $value): string

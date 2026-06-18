@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, toRef, watch } from 'vue';
 import { BadgeCheck, Calendar, MapPin, Ticket, Users } from '@lucide/vue';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -9,6 +9,7 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
+import { useEventDetailAddress } from '@/composables/useEventAddress';
 import {
     formatPrice,
     formatScheduleRange,
@@ -24,8 +25,11 @@ const props = defineProps<{
     event: VisualEvent | null;
 }>();
 
-// Gallery state resets whenever a different event is opened.
 const selectedImage = ref(0);
+const { address, loading: addressLoading, error: addressError } = useEventDetailAddress(
+    toRef(props, 'event'),
+    open,
+);
 
 watch(
     () => props.event?.id,
@@ -110,11 +114,22 @@ watch(
                             </div>
                         </div>
 
-                        <div v-if="event.address" class="flex gap-3">
+                        <div
+                            v-if="event.latitude !== 0 || event.longitude !== 0"
+                            class="flex gap-3"
+                        >
                             <MapPin class="mt-0.5 size-4 shrink-0 text-primary" />
                             <div>
                                 <p class="font-medium text-foreground">Location</p>
-                                <p class="text-muted-foreground">{{ event.address }}</p>
+                                <p v-if="addressLoading" class="text-muted-foreground">
+                                    Resolving address…
+                                </p>
+                                <p v-else-if="address" class="text-muted-foreground">
+                                    {{ address }}
+                                </p>
+                                <p v-else-if="addressError" class="text-muted-foreground">
+                                    Address unavailable
+                                </p>
                             </div>
                         </div>
 

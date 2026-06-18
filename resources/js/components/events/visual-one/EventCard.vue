@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Calendar, MapPin, Ticket } from '@lucide/vue';
+import { Calendar, Ticket } from '@lucide/vue';
 import { Badge } from '@/components/ui/badge';
 import { formatCardDate, formatPrice, statusLabel, statusVariant, typeLabel } from '@/lib/eventFormat';
 import { getEventTypeTheme } from '@/lib/eventTypeTheme';
@@ -19,7 +19,6 @@ const theme = computed(() => getEventTypeTheme(props.event.type));
 </script>
 
 <template>
-  <!-- Gradient shell: 1px padding reveals the type-colored frame -->
   <div
     :class="cn(
       'group cursor-pointer rounded-2xl p-px transition-all duration-300 hover:-translate-y-1',
@@ -70,10 +69,6 @@ const theme = computed(() => getEventTypeTheme(props.event.type));
           <p class="flex items-start gap-2">
             <Calendar :class="cn('mt-0.5 size-4 shrink-0', theme.accent)" />
             <span>{{ formatCardDate(event.schedule) }}</span>
-          </p>
-          <p v-if="event.address" class="flex items-start gap-2">
-            <MapPin :class="cn('mt-0.5 size-4 shrink-0', theme.accent)" />
-            <span class="truncate" :title="event.address">{{ event.address }}</span>
           </p>
           <p v-if="event.venue?.name" class="flex items-start gap-2">
             <Ticket :class="cn('mt-0.5 size-4 shrink-0', theme.accent)" />
