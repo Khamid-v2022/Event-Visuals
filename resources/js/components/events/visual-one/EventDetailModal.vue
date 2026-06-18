@@ -10,6 +10,8 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { useEventDetailAddress } from '@/composables/useEventAddress';
+import EventBookButton from '@/components/events/visual-one/EventBookButton.vue';
+import EventInterestButton from '@/components/events/visual-one/EventInterestButton.vue';
 import {
     formatPrice,
     formatScheduleRange,
@@ -23,6 +25,11 @@ const open = defineModel<boolean>('open', { default: false });
 
 const props = defineProps<{
     event: VisualEvent | null;
+}>();
+
+const emit = defineEmits<{
+    toggleBook: [eventId: string];
+    toggleInterest: [eventId: string];
 }>();
 
 const selectedImage = ref(0);
@@ -100,6 +107,13 @@ watch(
                             {{ event.name }}
                         </DialogTitle>
 
+                        <div class="flex flex-wrap items-center gap-2">
+                            <EventInterestButton
+                                :interested="event.interested ?? false"
+                                @toggle="emit('toggleInterest', event.id)"
+                            />
+                        </div>
+
                         <DialogDescription class="text-base leading-relaxed text-muted-foreground">
                             {{ event.description }}
                         </DialogDescription>
@@ -172,6 +186,13 @@ watch(
                             {{ event.notes }}
                         </p>
                     </div>
+
+                    <EventBookButton
+                        :booked="event.booked ?? false"
+                        size="default"
+                        block
+                        @toggle="emit('toggleBook', event.id)"
+                    />
                 </div>
             </div>
         </DialogContent>

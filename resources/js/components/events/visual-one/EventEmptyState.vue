@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { CalendarSearch } from '@lucide/vue';
+import type { VisualEventTab } from '@/composables/visual-one/urlState';
 
 defineProps<{
-    interestedOnly?: boolean;
+    tab?: VisualEventTab;
 }>();
 </script>
 
@@ -15,7 +16,10 @@ defineProps<{
         </div>
         <p class="text-base font-medium text-foreground">No events found</p>
         <p class="mt-1.5 max-w-xs text-sm leading-relaxed text-muted-foreground">
-            <template v-if="interestedOnly">
+            <template v-if="tab === 'booked'">
+                You have not booked any events yet.
+            </template>
+            <template v-else-if="tab === 'interested'">
                 You have not marked any events as interested yet.
             </template>
             <template v-else>

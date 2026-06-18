@@ -32,13 +32,30 @@ class Event extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function attendances(): HasMany
+    {
+        return $this->hasMany(EventAttendance::class);
+    }
+
     public function interests(): HasMany
     {
         return $this->hasMany(EventInterest::class);
     }
 
+    public function attendingUsers(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'event_attendances')->withTimestamps();
+    }
+
     public function interestedUsers(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'event_interests')->withTimestamps();
+    }
+
+    public function startsAt(): int
+    {
+        $payload = $this->payload ?? [];
+
+        return (int) ($payload['schedule']['starts_at'] ?? $this->created_time ?? 0);
     }
 }

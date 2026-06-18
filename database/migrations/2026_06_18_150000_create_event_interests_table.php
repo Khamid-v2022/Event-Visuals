@@ -14,8 +14,8 @@ return new class extends Migration
             $table->foreignUuid('event_id')->constrained('events')->cascadeOnDelete();
             $table->timestamps();
 
-            $table->unique(['user_id', 'event_id']);
-            $table->index(['user_id', 'created_at']);
+            $table->unique(['user_id', 'event_id'], 'event_interests_pair_unique');
+            $table->index(['user_id', 'created_at'], 'event_interests_user_created_index');
         });
     }
 

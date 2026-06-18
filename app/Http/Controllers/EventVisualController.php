@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Event;
+use App\Models\EventAttendance;
 use App\Models\EventInterest;
 use App\Services\GeocodingService;
 use Illuminate\Database\Eloquent\Builder;
@@ -61,6 +62,7 @@ class EventVisualController extends Controller
             'type' => 'nullable|string|in:'.implode(',', self::EVENT_TYPES),
             'status' => 'nullable|string|in:'.implode(',', self::FILTER_STATUSES),
             'sort' => 'nullable|string|in:'.implode(',', self::SORT_OPTIONS),
+            'booked_only' => 'sometimes|boolean',
             'interested_only' => 'sometimes|boolean',
         ]);
 
@@ -71,7 +73,7 @@ class EventVisualController extends Controller
             ? (int) $validated['offset']
             : ($page - 1) * $validated['per_page'];
 
-        $cached = $this->isInterestedOnlyFilter($validated)
+        $cached = $this->isUserSpecificListFilter($validated)
             ? $this->fetchGridPage($validated, $page)
             : Cache::remember(
                 'events.visual1.grid.v3:'.md5(json_encode(Arr::sortRecursive($validated))),
@@ -79,7 +81,7 @@ class EventVisualController extends Controller
                 fn () => $this->fetchGridPage($validated, $page),
             );
 
-        // Interest flags are per-user — apply after cache, never inside it.
+        // Per-user flags — apply after cache, never inside it.
         $events = Event::hydrate($cached['events'] ?? [])->all();
 
         return response()->json([
@@ -126,6 +128,16 @@ class EventVisualController extends Controller
     /**
      * @param  array<string, mixed>  $filters
      */
+    private function isUserSpecificListFilter(array $filters): bool
+    {
+        return $this->isBookedOnlyFilter($filters) || $this->isInterestedOnlyFilter($filters);
+    }
+
+    private function isBookedOnlyFilter(array $filters): bool
+    {
+        return filter_var($filters['booked_only'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    }
+
     private function isInterestedOnlyFilter(array $filters): bool
     {
         return filter_var($filters['interested_only'] ?? false, FILTER_VALIDATE_BOOLEAN);
@@ -179,6 +191,7 @@ class EventVisualController extends Controller
         $this->applyDateFilter($query, $filters);
         $this->applyLocationFilter($query, $filters['location'] ?? null);
         $this->applySearchFilter($query, $filters['q'] ?? null);
+        $this->applyBookedFilter($query, filter_var($filters['booked_only'] ?? false, FILTER_VALIDATE_BOOLEAN));
         $this->applyInterestedFilter($query, filter_var($filters['interested_only'] ?? false, FILTER_VALIDATE_BOOLEAN));
 
         return $query;
@@ -189,7 +202,7 @@ class EventVisualController extends Controller
      */
     private function resolveTotal(array $filters): int
     {
-        if ($this->isInterestedOnlyFilter($filters)) {
+        if ($this->isUserSpecificListFilter($filters)) {
             return $this->buildFilteredQuery($filters)->count();
         }
 
@@ -237,11 +250,13 @@ class EventVisualController extends Controller
     private function transformPage(array $events): array
     {
         $eventIds = collect($events)->pluck('id')->all();
+        $bookedIds = $this->bookedEventIds($eventIds);
         $interestedIds = $this->interestedEventIds($eventIds);
 
         return collect($events)
             ->map(fn (Event $event) => [
                 ...$this->transform($event),
+                'booked' => isset($bookedIds[$event->id]),
                 'interested' => isset($interestedIds[$event->id]),
             ])
             ->all();
@@ -285,6 +300,48 @@ class EventVisualController extends Controller
         }
 
         $query->whereIn('events.id', EventInterest::query()
+            ->where('user_id', $user->id)
+            ->select('event_id'));
+    }
+
+    /**
+     * @param  array<int, string>  $eventIds
+     * @return array<string, true>
+     */
+    private function bookedEventIds(array $eventIds): array
+    {
+        $user = auth()->user();
+
+        if ($user === null || $eventIds === []) {
+            return [];
+        }
+
+        return EventAttendance::query()
+            ->where('user_id', $user->id)
+            ->whereIn('event_id', $eventIds)
+            ->pluck('event_id')
+            ->mapWithKeys(fn (string $id) => [$id => true])
+            ->all();
+    }
+
+    /**
+     * @param  Builder<Event>  $query
+     */
+    private function applyBookedFilter(Builder $query, bool $bookedOnly): void
+    {
+        if (! $bookedOnly) {
+            return;
+        }
+
+        $user = auth()->user();
+
+        if ($user === null) {
+            $query->whereRaw('0 = 1');
+
+            return;
+        }
+
+        $query->whereIn('events.id', EventAttendance::query()
             ->where('user_id', $user->id)
             ->select('event_id'));
     }

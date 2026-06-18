@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Calendar, Heart, Ticket } from '@lucide/vue';
+import { Calendar, Ticket } from '@lucide/vue';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import EventBookButton from '@/components/events/visual-one/EventBookButton.vue';
+import EventInterestButton from '@/components/events/visual-one/EventInterestButton.vue';
 import { formatCardDate, formatPrice, statusLabel, statusVariant, typeLabel } from '@/lib/eventFormat';
 import { getEventTypeTheme } from '@/lib/eventTypeTheme';
 import { cn } from '@/lib/utils';
@@ -14,6 +15,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
     select: [event: VisualEvent];
+    toggleBook: [eventId: string];
     toggleInterest: [eventId: string];
 }>();
 
@@ -38,29 +40,11 @@ const theme = computed(() => getEventTypeTheme(props.event.type));
         />
         <div class="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent" />
 
-        <Button
-          type="button"
-          variant="secondary"
-          size="icon-sm"
-          :class="cn(
-            'absolute top-3 right-3 size-8 rounded-full shadow-md backdrop-blur-sm transition-colors',
-            event.interested
-              ? 'bg-white ring-2 ring-rose-400/60 hover:bg-white'
-              : 'bg-black/35 hover:bg-black/45',
-          )"
-          :aria-pressed="event.interested ?? false"
-          :aria-label="event.interested ? 'Remove from interested' : 'Mark as interested'"
-          @click.stop="emit('toggleInterest', event.id)"
-        >
-          <Heart
-            :class="cn(
-              'size-4 transition-colors',
-              event.interested
-                ? 'fill-rose-500 text-rose-500'
-                : 'text-white drop-shadow-sm',
-            )"
-          />
-        </Button>
+        <EventInterestButton
+          class="absolute top-3 right-3"
+          :interested="event.interested ?? false"
+          @toggle="emit('toggleInterest', event.id)"
+        />
 
         <div class="absolute top-3 left-3 flex flex-wrap gap-1.5">
           <Badge variant="secondary" class="bg-background/90 text-foreground backdrop-blur-sm">
@@ -102,15 +86,22 @@ const theme = computed(() => getEventTypeTheme(props.event.type));
           </p>
         </div>
 
-        <div v-if="event.tags.length" class="flex flex-wrap gap-1.5 pt-1">
-          <Badge
-            v-for="tag in event.tags.slice(0, 3)"
-            :key="tag"
-            variant="outline"
-            class="text-xs font-normal capitalize"
-          >
-            {{ tag }}
-          </Badge>
+        <div class="flex items-center justify-between gap-2 pt-1">
+          <div v-if="event.tags.length" class="flex flex-wrap gap-1.5">
+            <Badge
+              v-for="tag in event.tags.slice(0, 2)"
+              :key="tag"
+              variant="outline"
+              class="text-xs font-normal capitalize"
+            >
+              {{ tag }}
+            </Badge>
+          </div>
+          <EventBookButton
+            :booked="event.booked ?? false"
+            class="ml-auto shrink-0"
+            @toggle="emit('toggleBook', event.id)"
+          />
         </div>
       </div>
     </article>

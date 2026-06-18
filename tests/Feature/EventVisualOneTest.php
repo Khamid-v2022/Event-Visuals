@@ -1,9 +1,14 @@
 <?php
 
+use App\Jobs\SendEventAttendanceConfirmation;
+use App\Jobs\SendEventAttendanceReminder;
 use App\Models\Event;
+use App\Models\EventAttendance;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 
 uses(RefreshDatabase::class);
 
@@ -199,7 +204,6 @@ it('marks events as interested for authenticated users', function () {
         'payload' => ['name' => 'Saved Event', 'description' => ''],
     ]);
 
-    // Warm the grid cache as a guest before login.
     $this->getJson(route('events.visual1.data'))
         ->assertJsonPath('data.0.interested', false);
 
@@ -237,34 +241,7 @@ it('filters the grid to interested events only', function () {
         ->assertJsonPath('data.0.name', 'Interested Event');
 });
 
-it('reflects a newly added interest when interested only was previously empty', function () {
-    $user = User::factory()->create();
-    $owner = User::factory()->create();
-    $event = Event::factory()->for($owner)->create([
-        'status' => 'published',
-        'payload' => ['name' => 'Fresh Interest', 'description' => ''],
-    ]);
-
-    $interestedOnlyUrl = route('events.visual1.data', ['interested_only' => true]);
-
-    // Warm an empty interested-only response (would be cached without the fix).
-    $this->actingAs($user)
-        ->getJson($interestedOnlyUrl)
-        ->assertOk()
-        ->assertJsonPath('total', 0);
-
-    $this->actingAs($user)
-        ->postJson(route('events.visual1.interests.store', $event))
-        ->assertOk();
-
-    $this->actingAs($user)
-        ->getJson($interestedOnlyUrl)
-        ->assertOk()
-        ->assertJsonPath('total', 1)
-        ->assertJsonPath('data.0.name', 'Fresh Interest');
-});
-
-it('removes an interested event', function () {
+it('marks events as booked for authenticated users', function () {
     $user = User::factory()->create();
     $owner = User::factory()->create();
     $event = Event::factory()->for($owner)->create([
@@ -272,16 +249,149 @@ it('removes an interested event', function () {
         'payload' => ['name' => 'Saved Event', 'description' => ''],
     ]);
 
-    $this->actingAs($user)
-        ->postJson(route('events.visual1.interests.store', $event));
+    // Warm the grid cache as a guest before login.
+    $this->getJson(route('events.visual1.data'))
+        ->assertJsonPath('data.0.booked', false);
+
+    Queue::fake();
 
     $this->actingAs($user)
-        ->deleteJson(route('events.visual1.interests.destroy', $event))
+        ->postJson(route('events.visual1.attendances.store', $event))
         ->assertOk()
-        ->assertJsonPath('interested', false);
+        ->assertJsonPath('booked', true);
+
+    Queue::assertPushed(SendEventAttendanceConfirmation::class);
 
     $this->actingAs($user)
         ->getJson(route('events.visual1.data'))
         ->assertOk()
-        ->assertJsonPath('data.0.interested', false);
+        ->assertJsonPath('data.0.booked', true);
+});
+
+it('filters the grid to booked events only', function () {
+    $user = User::factory()->create();
+    $owner = User::factory()->create();
+
+    $booked = Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Booked Event', 'description' => ''],
+    ]);
+    Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Other Event', 'description' => ''],
+    ]);
+
+    Queue::fake();
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.attendances.store', $booked));
+
+    $this->actingAs($user)
+        ->getJson(route('events.visual1.data', ['booked_only' => true]))
+        ->assertOk()
+        ->assertJsonPath('total', 1)
+        ->assertJsonPath('data.0.name', 'Booked Event');
+});
+
+it('reflects a newly added booking when booked only was previously empty', function () {
+    $user = User::factory()->create();
+    $owner = User::factory()->create();
+    $event = Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Fresh Booking', 'description' => ''],
+    ]);
+
+    $bookedOnlyUrl = route('events.visual1.data', ['booked_only' => true]);
+
+    $this->actingAs($user)
+        ->getJson($bookedOnlyUrl)
+        ->assertOk()
+        ->assertJsonPath('total', 0);
+
+    Queue::fake();
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.attendances.store', $event))
+        ->assertOk();
+
+    $this->actingAs($user)
+        ->getJson($bookedOnlyUrl)
+        ->assertOk()
+        ->assertJsonPath('total', 1)
+        ->assertJsonPath('data.0.name', 'Fresh Booking');
+});
+
+it('removes a booked event', function () {
+    $user = User::factory()->create();
+    $owner = User::factory()->create();
+    $event = Event::factory()->for($owner)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Saved Event', 'description' => ''],
+    ]);
+
+    Queue::fake();
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.attendances.store', $event));
+
+    $this->actingAs($user)
+        ->deleteJson(route('events.visual1.attendances.destroy', $event))
+        ->assertOk()
+        ->assertJsonPath('booked', false);
+
+    $this->actingAs($user)
+        ->getJson(route('events.visual1.data'))
+        ->assertOk()
+        ->assertJsonPath('data.0.booked', false);
+});
+
+it('does not re-dispatch confirmation when booking again', function () {
+    $user = User::factory()->create();
+    $event = Event::factory()->for($user)->create([
+        'status' => 'published',
+        'payload' => ['name' => 'Repeat Event', 'description' => ''],
+    ]);
+
+    Queue::fake();
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.attendances.store', $event))
+        ->assertOk();
+
+    $this->actingAs($user)
+        ->deleteJson(route('events.visual1.attendances.destroy', $event))
+        ->assertOk();
+
+    $this->actingAs($user)
+        ->postJson(route('events.visual1.attendances.store', $event))
+        ->assertOk();
+
+    Queue::assertPushed(SendEventAttendanceConfirmation::class, 2);
+});
+
+it('dispatches reminder jobs for due attendances', function () {
+    $user = User::factory()->create();
+    $startsAt = now()->addDays(3)->subMinutes(30)->timestamp;
+    $event = Event::factory()->for($user)->create([
+        'status' => 'published',
+        'created_time' => $startsAt,
+        'payload' => [
+            'name' => 'Soon Event',
+            'description' => '',
+            'schedule' => ['starts_at' => $startsAt, 'ends_at' => $startsAt + 3600],
+        ],
+    ]);
+
+    EventAttendance::create([
+        'user_id' => $user->id,
+        'event_id' => $event->id,
+    ]);
+
+    Queue::fake();
+
+    Artisan::call('attendances:send-reminders');
+
+    Queue::assertPushed(SendEventAttendanceReminder::class, function (SendEventAttendanceReminder $job) {
+        return $job->window === 'three_days';
+    });
 });

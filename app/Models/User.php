@@ -50,9 +50,19 @@ class User extends Authenticatable implements PasskeyUser
         ];
     }
 
+    public function eventAttendances(): HasMany
+    {
+        return $this->hasMany(EventAttendance::class);
+    }
+
     public function eventInterests(): HasMany
     {
         return $this->hasMany(EventInterest::class);
+    }
+
+    public function bookedEvents(): BelongsToMany
+    {
+        return $this->belongsToMany(Event::class, 'event_attendances')->withTimestamps();
     }
 
     public function interestedEvents(): BelongsToMany

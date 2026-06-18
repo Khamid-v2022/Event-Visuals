@@ -8,6 +8,7 @@ import EventDetailModal from '@/components/events/visual-one/EventDetailModal.vu
 import EventEmptyState from '@/components/events/visual-one/EventEmptyState.vue';
 import EventFilters from '@/components/events/visual-one/EventFilters.vue';
 import EventSortBar from '@/components/events/visual-one/EventSortBar.vue';
+import EventViewTabs from '@/components/events/visual-one/EventViewTabs.vue';
 import { useVisualOneEvents } from '@/composables/useVisualOneEvents';
 import { EVENT_GRID_CLASS } from '@/composables/visual-one/constants';
 import type { VisualEvent } from '@/types/event';
@@ -18,6 +19,7 @@ const isAuthenticated = computed(() => (page.props.auth as { user: unknown }).us
 const {
     filters,
     sort,
+    tab,
     events,
     hasMore,
     total,
@@ -33,7 +35,9 @@ const {
     initFromUrl,
     applyFilters,
     applySort,
+    applyTab,
     clearSuggestions,
+    toggleBook,
     toggleInterest,
 } = useVisualOneEvents();
 
@@ -82,6 +86,10 @@ function onSelectSuggestion(value: string) {
     applyFilters();
 }
 
+function onToggleBook(eventId: string) {
+    toggleBook(eventId, isAuthenticated.value);
+}
+
 function onToggleInterest(eventId: string) {
     toggleInterest(eventId, isAuthenticated.value);
 }
@@ -96,7 +104,7 @@ onMounted(() => {
     <Head title="Event Directory" />
 
     <div class="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8">
-        <header class="flex items-center justify-between gap-3">
+        <header class="flex flex-wrap items-center justify-between gap-3">
             <h1 class="text-2xl font-semibold tracking-tight text-foreground">Event Directory</h1>
             <p class="text-sm text-muted-foreground">
                 <template v-if="hasLoadedOnce && !loading">
@@ -118,21 +126,17 @@ onMounted(() => {
             />
 
             <div class="flex min-w-0 flex-1 flex-col gap-4">
-                <EventSortBar
-                    v-model:sort="sort"
-                    v-model:interested-only="filters.interested_only"
-                    :show-interested-toggle="isAuthenticated"
-                    :loading="loading"
-                    @change="applySort()"
-                    @interested-change="applyFilters()"
-                />
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <EventViewTabs v-model:tab="tab" :loading="loading" @change="applyTab()" />
+                    <EventSortBar v-model:sort="sort" :loading="loading" @change="applySort()" />
+                </div>
 
                 <EventCardSkeletonGrid v-if="loading" />
 
                 <template v-else>
                     <EventEmptyState
                         v-if="showEmptyState"
-                        :interested-only="filters.interested_only"
+                        :tab="tab"
                     />
 
                     <div v-else :class="EVENT_GRID_CLASS">
@@ -141,6 +145,7 @@ onMounted(() => {
                             :key="event.id"
                             :event="event"
                             @select="openEvent"
+                            @toggle-book="onToggleBook"
                             @toggle-interest="onToggleInterest"
                         />
                     </div>
@@ -162,7 +167,12 @@ onMounted(() => {
                     </p>
                 </template>
 
-                <EventDetailModal v-model:open="modalOpen" :event="selectedEvent" />
+                <EventDetailModal
+                    v-model:open="modalOpen"
+                    :event="selectedEvent"
+                    @toggle-book="onToggleBook"
+                    @toggle-interest="onToggleInterest"
+                />
             </div>
         </div>
     </div>

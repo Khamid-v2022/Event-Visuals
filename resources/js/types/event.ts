@@ -33,6 +33,7 @@ export interface VisualEvent {
     latitude: number;
     longitude: number;
     images: string[];
+    booked?: boolean;
     interested?: boolean;
 }
 
@@ -43,7 +44,6 @@ export interface VisualEventFilters {
     q: string;
     type: string;
     status: string;
-    interested_only: boolean;
 }
 
 export interface VisualEventPage {

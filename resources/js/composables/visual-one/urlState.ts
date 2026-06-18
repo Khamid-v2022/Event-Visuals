@@ -3,15 +3,21 @@ import { VISUAL_ONE_SORT_OPTIONS, type VisualEventSort } from '@/composables/vis
 
 export const DEFAULT_STATUS = 'all';
 export const DEFAULT_SORT: VisualEventSort = 'recent';
+export const DEFAULT_TAB = 'all' as const;
+
+export type VisualEventTab = 'all' | 'interested' | 'booked';
 
 const VALID_SORTS = new Set(VISUAL_ONE_SORT_OPTIONS.map((option) => option.value));
+const VALID_TABS = new Set<VisualEventTab>(['all', 'interested', 'booked']);
 
 export function parseUrlState(search: string): {
     filters: VisualEventFilters;
     sort: VisualEventSort;
+    tab: VisualEventTab;
 } {
     const params = new URLSearchParams(search);
     const sortParam = params.get('sort');
+    const tabParam = params.get('tab');
 
     return {
         filters: {
@@ -21,15 +27,21 @@ export function parseUrlState(search: string): {
             q: params.get('q') ?? '',
             type: params.get('type') ?? '',
             status: params.get('status') ?? DEFAULT_STATUS,
-            interested_only: params.get('interested_only') === '1',
         },
+        tab: tabParam && VALID_TABS.has(tabParam as VisualEventTab)
+            ? (tabParam as VisualEventTab)
+            : DEFAULT_TAB,
         sort: sortParam && VALID_SORTS.has(sortParam as VisualEventSort)
             ? (sortParam as VisualEventSort)
             : DEFAULT_SORT,
     };
 }
 
-export function buildUrlQuery(filters: VisualEventFilters, sort: VisualEventSort): string {
+export function buildUrlQuery(
+    filters: VisualEventFilters,
+    sort: VisualEventSort,
+    tab: VisualEventTab,
+): string {
     const params = new URLSearchParams();
 
     if (filters.q.trim()) params.set('q', filters.q.trim());
@@ -40,14 +52,18 @@ export function buildUrlQuery(filters: VisualEventFilters, sort: VisualEventSort
     if (filters.status && filters.status !== DEFAULT_STATUS) {
         params.set('status', filters.status);
     }
-    if (filters.interested_only) params.set('interested_only', '1');
+    if (tab !== DEFAULT_TAB) params.set('tab', tab);
     if (sort !== DEFAULT_SORT) params.set('sort', sort);
 
     return params.toString();
 }
 
-export function syncUrlState(filters: VisualEventFilters, sort: VisualEventSort): void {
-    const query = buildUrlQuery(filters, sort);
+export function syncUrlState(
+    filters: VisualEventFilters,
+    sort: VisualEventSort,
+    tab: VisualEventTab,
+): void {
+    const query = buildUrlQuery(filters, sort, tab);
     const url = query ? `${window.location.pathname}?${query}` : window.location.pathname;
     window.history.replaceState(window.history.state, '', url);
 }

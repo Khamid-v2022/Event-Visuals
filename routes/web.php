@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\EventController;
+use App\Http\Controllers\EventAttendanceController;
 use App\Http\Controllers\EventInterestController;
 use App\Http\Controllers\EventVisualController;
 use Illuminate\Support\Facades\Route;
@@ -17,6 +18,10 @@ Route::get('events-visual-1/locations', [EventVisualController::class, 'location
 Route::get('events-visual-1/address', [EventVisualController::class, 'resolveAddress'])->name('events.visual1.address');
 
 Route::middleware('auth')->group(function () {
+    Route::post('events-visual-1/attendances/{event}', [EventAttendanceController::class, 'store'])
+        ->name('events.visual1.attendances.store');
+    Route::delete('events-visual-1/attendances/{event}', [EventAttendanceController::class, 'destroy'])
+        ->name('events.visual1.attendances.destroy');
     Route::post('events-visual-1/interests/{event}', [EventInterestController::class, 'store'])
         ->name('events.visual1.interests.store');
     Route::delete('events-visual-1/interests/{event}', [EventInterestController::class, 'destroy'])

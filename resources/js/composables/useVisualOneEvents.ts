@@ -2,7 +2,14 @@ import { useDebounceFn } from '@vueuse/core';
 import { router } from '@inertiajs/vue3';
 import { reactive, ref } from 'vue';
 import { pageOffset, perPageForVisualPage, type VisualEventSort } from '@/composables/visual-one/constants';
-import { DEFAULT_SORT, DEFAULT_STATUS, parseUrlState, syncUrlState } from '@/composables/visual-one/urlState';
+import {
+    DEFAULT_SORT,
+    DEFAULT_STATUS,
+    DEFAULT_TAB,
+    parseUrlState,
+    syncUrlState,
+    type VisualEventTab,
+} from '@/composables/visual-one/urlState';
 import { fetchJson } from '@/lib/fetchJson';
 import type {
     LocationSuggestion,
@@ -18,7 +25,6 @@ const defaultFilters = (): VisualEventFilters => ({
     q: '',
     type: '',
     status: DEFAULT_STATUS,
-    interested_only: false,
 });
 
 type FetchMode = 'replace' | 'append';
@@ -26,6 +32,7 @@ type FetchMode = 'replace' | 'append';
 export function useVisualOneEvents() {
     const filters = reactive<VisualEventFilters>(defaultFilters());
     const sort = ref<VisualEventSort>(DEFAULT_SORT);
+    const tab = ref<VisualEventTab>(DEFAULT_TAB);
     const events = ref<VisualEvent[]>([]);
     const page = ref(0);
     const hasMore = ref(false);
@@ -41,10 +48,11 @@ export function useVisualOneEvents() {
         const state = parseUrlState(window.location.search);
         Object.assign(filters, state.filters);
         sort.value = state.sort;
+        tab.value = state.tab;
     }
 
     function syncUrl() {
-        syncUrlState(filters, sort.value);
+        syncUrlState(filters, sort.value, tab.value);
     }
 
     function cacheKey(targetPage: number) {
@@ -53,13 +61,13 @@ export function useVisualOneEvents() {
             per_page: perPageForVisualPage(targetPage),
             offset: pageOffset(targetPage),
             sort: sort.value,
+            tab: tab.value,
             date_from: filters.date_from,
             date_to: filters.date_to,
             location: filters.location.trim(),
             q: filters.q.trim(),
             type: filters.type,
             status: filters.status,
-            interested_only: filters.interested_only,
         });
     }
 
@@ -78,7 +86,8 @@ export function useVisualOneEvents() {
         if (filters.status && filters.status !== DEFAULT_STATUS) {
             params.set('status', filters.status);
         }
-        if (filters.interested_only) params.set('interested_only', '1');
+        if (tab.value === 'booked') params.set('booked_only', '1');
+        if (tab.value === 'interested') params.set('interested_only', '1');
 
         return params;
     }
@@ -172,12 +181,48 @@ export function useVisualOneEvents() {
         fetchPage(1, 'replace');
     }
 
+    function applyTab() {
+        clearPageCache();
+        syncUrl();
+        fetchPage(1, 'replace');
+    }
+
     function loadMore() {
         if (!hasMore.value || loading.value || loadingMore.value) {
             return;
         }
 
         fetchPage(page.value + 1, 'append');
+    }
+
+    async function toggleBook(eventId: string, isAuthenticated: boolean) {
+        if (!isAuthenticated) {
+            router.visit('/login');
+
+            return;
+        }
+
+        const event = events.value.find((item) => item.id === eventId);
+        if (!event) {
+            return;
+        }
+
+        const wasBooked = event.booked ?? false;
+        event.booked = !wasBooked;
+
+        try {
+            await fetchJson<{ booked: boolean }>(`/events-visual-1/attendances/${eventId}`, {
+                method: wasBooked ? 'DELETE' : 'POST',
+            });
+
+            if (tab.value === 'booked' && wasBooked) {
+                events.value = events.value.filter((item) => item.id !== eventId);
+            }
+
+            clearPageCache();
+        } catch {
+            event.booked = wasBooked;
+        }
     }
 
     async function toggleInterest(eventId: string, isAuthenticated: boolean) {
@@ -200,7 +245,7 @@ export function useVisualOneEvents() {
                 method: wasInterested ? 'DELETE' : 'POST',
             });
 
-            if (filters.interested_only && wasInterested) {
+            if (tab.value === 'interested' && wasInterested) {
                 events.value = events.value.filter((item) => item.id !== eventId);
             }
 
@@ -245,6 +290,7 @@ export function useVisualOneEvents() {
     function resetFilters() {
         Object.assign(filters, defaultFilters());
         sort.value = DEFAULT_SORT;
+        tab.value = DEFAULT_TAB;
         clearSuggestions();
         clearPageCache();
         syncUrl();
@@ -254,6 +300,7 @@ export function useVisualOneEvents() {
     return {
         filters,
         sort,
+        tab,
         events,
         page,
         hasMore,
@@ -266,9 +313,11 @@ export function useVisualOneEvents() {
         initFromUrl,
         applyFilters,
         applySort,
+        applyTab,
         loadMore,
         fetchPage,
         resetFilters,
+        toggleBook,
         toggleInterest,
         debouncedFetchLocationSuggestions,
         clearSuggestions,
