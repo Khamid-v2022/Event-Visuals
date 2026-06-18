@@ -12,6 +12,11 @@ use Illuminate\Support\Facades\Cache;
 
 class EventVisualController extends Controller
 {
+    private const EVENT_TYPES = [
+        'concert', 'conference', 'meetup', 'workshop', 'festival', 'sports', 'networking', 'exhibition',
+    ];
+
+    private const EVENT_STATUSES = ['draft', 'published', 'cancelled', 'sold_out'];
     /** Alternate between two local image sets so adjacent cards feel less repetitive. */
     private const EVENT_IMAGE_SETS = [
         [
@@ -38,14 +43,17 @@ class EventVisualController extends Controller
             'date_to' => 'nullable|date|after_or_equal:date_from',
             'location' => 'nullable|string|max:200',
             'q' => 'nullable|string|max:200',
+            'type' => 'nullable|string|in:'.implode(',', self::EVENT_TYPES),
+            'status' => 'nullable|string|in:'.implode(',', self::EVENT_STATUSES),
         ]);
 
         $cacheKey = 'events.visual1.grid:'.md5(json_encode(Arr::sortRecursive($validated)));
 
         $payload = Cache::remember($cacheKey, self::GRID_TTL_SECONDS, function () use ($validated) {
-            $query = Event::query()
-                ->whereIn('status', ['published', 'sold_out']);
+            $query = Event::query();
 
+            $this->applyStatusFilter($query, $validated['status'] ?? null);
+            $this->applyTypeFilter($query, $validated['type'] ?? null);
             $this->applyDateFilter($query, $validated);
             $this->applyLocationFilter($query, $validated['location'] ?? null);
             $this->applySearchFilter($query, $validated['q'] ?? null);
@@ -80,6 +88,30 @@ class EventVisualController extends Controller
         return response()->json([
             'data' => $this->geocoding->suggest($query)->all(),
         ]);
+    }
+
+    /**
+     * @param  Builder<Event>  $query
+     */
+    private function applyStatusFilter(Builder $query, ?string $status): void
+    {
+        if ($status !== null && trim($status) !== '') {
+            $query->where('status', $status);
+
+            return;
+        }
+
+        $query->whereIn('status', ['published', 'sold_out']);
+    }
+
+    /**
+     * @param  Builder<Event>  $query
+     */
+    private function applyTypeFilter(Builder $query, ?string $type): void
+    {
+        if ($type !== null && trim($type) !== '') {
+            $query->where('type', $type);
+        }
     }
 
     /**

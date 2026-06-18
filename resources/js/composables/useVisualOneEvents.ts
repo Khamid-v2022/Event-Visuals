@@ -12,6 +12,8 @@ const emptyFilters = (): VisualEventFilters => ({
     date_to: '',
     location: '',
     q: '',
+    type: '',
+    status: '',
 });
 
 export function useVisualOneEvents() {
@@ -33,7 +35,21 @@ export function useVisualOneEvents() {
             date_to: filters.date_to,
             location: filters.location.trim(),
             q: filters.q.trim(),
+            type: filters.type,
+            status: filters.status,
         });
+    }
+
+    function buildParams(targetPage: number) {
+        const params = new URLSearchParams({ page: String(targetPage) });
+        if (filters.date_from) params.set('date_from', filters.date_from);
+        if (filters.date_to) params.set('date_to', filters.date_to);
+        if (filters.location.trim()) params.set('location', filters.location.trim());
+        if (filters.q.trim()) params.set('q', filters.q.trim());
+        if (filters.type) params.set('type', filters.type);
+        if (filters.status) params.set('status', filters.status);
+
+        return params;
     }
 
     async function fetchPage(targetPage: number) {
@@ -54,11 +70,7 @@ export function useVisualOneEvents() {
 
         loading.value = true;
 
-        const params = new URLSearchParams({ page: String(targetPage) });
-        if (filters.date_from) params.set('date_from', filters.date_from);
-        if (filters.date_to) params.set('date_to', filters.date_to);
-        if (filters.location.trim()) params.set('location', filters.location.trim());
-        if (filters.q.trim()) params.set('q', filters.q.trim());
+        const params = buildParams(targetPage);
 
         try {
             const response = await fetch(`/events-visual-1/data?${params.toString()}`, {
@@ -89,10 +101,17 @@ export function useVisualOneEvents() {
     }
 
     function goToPage(nextPage: number) {
-        if (nextPage < 1 || nextPage > lastPage.value || loading.value) {
+        if (loading.value || lastPage.value < 1) {
             return;
         }
-        fetchPage(nextPage);
+
+        const target = Math.min(Math.max(1, Math.trunc(nextPage)), lastPage.value);
+
+        if (target === page.value) {
+            return;
+        }
+
+        fetchPage(target);
     }
 
     async function prefetchPage(targetPage: number) {
@@ -105,11 +124,7 @@ export function useVisualOneEvents() {
             return;
         }
 
-        const params = new URLSearchParams({ page: String(targetPage) });
-        if (filters.date_from) params.set('date_from', filters.date_from);
-        if (filters.date_to) params.set('date_to', filters.date_to);
-        if (filters.location.trim()) params.set('location', filters.location.trim());
-        if (filters.q.trim()) params.set('q', filters.q.trim());
+        const params = buildParams(targetPage);
 
         try {
             const response = await fetch(`/events-visual-1/data?${params.toString()}`, {
@@ -164,6 +179,8 @@ export function useVisualOneEvents() {
         filters.date_to = '';
         filters.location = '';
         filters.q = '';
+        filters.type = '';
+        filters.status = '';
         clearSuggestions();
         pageCache.clear();
         fetchPage(1);

@@ -41,6 +41,8 @@ export interface VisualEventFilters {
     date_to: string;
     location: string;
     q: string;
+    type: string;
+    status: string;
 }
 
 export interface VisualEventPage {

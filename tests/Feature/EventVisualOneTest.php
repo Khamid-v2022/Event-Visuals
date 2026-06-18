@@ -61,6 +61,25 @@ it('filters visual grid data by search term', function () {
         ->assertJsonPath('data.0.name', 'Unique Jazz Gala');
 });
 
+it('filters visual grid data by type and status', function () {
+    $user = User::factory()->create();
+    Event::factory()->for($user)->create([
+        'type' => 'concert',
+        'status' => 'published',
+        'payload' => ['name' => 'Concert A', 'description' => ''],
+    ]);
+    Event::factory()->for($user)->create([
+        'type' => 'meetup',
+        'status' => 'published',
+        'payload' => ['name' => 'Meetup B', 'description' => ''],
+    ]);
+
+    $this->getJson(route('events.visual1.data', ['type' => 'concert']))
+        ->assertOk()
+        ->assertJsonPath('total', 1)
+        ->assertJsonPath('data.0.type', 'concert');
+});
+
 it('returns location suggestions for the location filter', function () {
     Http::fake([
         'nominatim.openstreetmap.org/*' => Http::response([
